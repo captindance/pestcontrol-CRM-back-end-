@@ -1,0 +1,815 @@
+import { Router, Request, Response } from 'express';
+import { prisma } from '../db/prisma.js';
+import bcrypt from 'bcryptjs';
+import { getEmailSettings, updateEmailSettings, sendMail, buildInvitationEmail, buildVerificationEmail, getSignupEventLog } from '../services/emailService.js';
+import { logUserRoleChange } from '../services/auditService.js';
+
+const router = Router();
+
+// Simple role check helper
+function requirePlatformAdmin(req: Request, res: Response): boolean {
+  if (req.user?.roles?.includes('platform_admin')) return true;
+  res.status(403).json({ error: 'Forbidden: platform_admin role required' });
+  return false;
+}
+
+// List all clients
+router.get('/clients', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const clients = await prisma.client.findMany({ orderBy: { createdAt: 'asc' } });
+  res.json(clients.map(c => ({ id: c.id, name: c.name, createdAt: c.createdAt })));
+});
+
+// List managers
+router.get('/managers', async (_req: Request, res: Response) => {
+  // Platform admin auth enforced by app.use('/api/admin', authMiddleware, ...)
+  try {
+    // Find all users who have the manager role in user_roles
+    const managerRoles = await prisma.userRole.findMany({ 
+      where: { role: 'manager' },
+      include: { user: true },
+      distinct: ['userId']
+    });
+    const managers = managerRoles.map(mr => ({ 
+      id: mr.user.id, 
+      email: mr.user.email, 
+      emailVerified: mr.user.emailVerified 
+    }));
+    res.json(managers);
+  } catch (e: any) {
+    console.error('List managers error', e);
+    res.status(500).json({ error: e?.message || 'Failed to list managers' });
+  }
+});
+
+// Helper to generate secure random token
+function generateInvitationToken(): string {
+  return `inv_${Math.random().toString(36).slice(2, 32)}`;
+}
+
+// Quick email configuration for development (REMOVE IN PRODUCTION)
+router.post('/email-config', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  
+  const { host, port, username, password, fromAddress } = req.body || {};
+  try {
+    // Create basic email config
+    const config = {
+      kind: 'email',
+      provider: 'smtp',
+      host,
+      port: parseInt(port) || 587,
+      secure: port === '465',
+      username,
+      fromAddress,
+      configJson: { port: parseInt(port) || 587 },
+      secretsIv: Buffer.from('dev_iv_16bytes').toString('hex'),
+      secretsTag: Buffer.from('dev_tag_16bytes').toString('hex'),
+      secretsCipher: Buffer.from(JSON.stringify({ password })).toString('base64'), // Base64 encoding for dev
+      active: true
+    };
+    
+    await prisma.integrationSetting.upsert({
+      where: { kind: 'email', provider: 'smtp' },
+      update: config,
+      create: config
+    });
+    
+    res.json({ message: 'Email configuration saved' });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Failed to save email configuration' });
+}
+});
+
+// Send invitation to email (generic or for specific client if clientId provided)
+router.post('/invitations', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+
+  const { email, clientId, clientName, invitationType = 'account_creation' } = req.body || {};
+  try {
+    // Validate email format
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+   
+    try {
+    // Check if user already exists
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+  
+  try {
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingUser) {
+      return res.status(409).json({ error: 'User already exists with this email' });
+    }
+    
+    // If clientId provided, verify it exists
+    if (clientId) {
+      const client = await prisma.client.findUnique({ where: { id: parseInt(clientId) } });
+      if (!client) {
+        return res.status(404).json({ error: 'Client not found' });
+      }
+    }
+    
+    const clientIdNum = clientId ? parseInt(clientId) : null;
+    
+    // Generate new token and expiration if needed
+    const token = generateInvitationToken();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+    
+    let invitation: any;
+    if (clientIdNum === null) {
+      // For generic invites without a client, find the latest and update or create
+      const existing = await prisma.invitation.findFirst({
+        where: { email: normalizedEmail, clientId: null, invitationType },
+        orderBy: { sentAt: 'desc' }
+      });
+
+      if (existing) {
+        invitation = await prisma.invitation.update({
+          where: { id: existing.id },
+          data: {
+            token,
+            status: 'pending',
+            sentAt: new Date(),
+            expiresAt,
+            acceptedAt: null,
+            updatedAt: new Date()
+          },
+          include: { client: true }
+        });
+      } else {
+        invitation = await prisma.invitation.create({
+          data: {
+            email: normalizedEmail,
+            clientId: null,
+            invitationType,
+            token,
+            status: 'pending',
+            expiresAt
+          },
+          include: { client: true }
+        });
+      }
+    } else {
+      // Client-specific invites can use the composite unique constraint
+      invitation = await prisma.invitation.upsert({
+        where: {
+          email_invitationType_clientId: {
+            email: normalizedEmail,
+            invitationType,
+            clientId: clientIdNum as any
+          }
+        },
+        update: {
+          token,
+          status: 'pending',
+          sentAt: new Date(),
+          expiresAt,
+          acceptedAt: null,
+          updatedAt: new Date()
+        },
+        create: {
+          email: normalizedEmail,
+          clientId: clientIdNum,
+          invitationType,
+          token,
+          status: 'pending',
+          expiresAt
+        },
+        include: { client: true }
+      }) as any;
+    }
+    
+    const displayName = clientId ? invitation.client?.name : (clientName && clientName.trim()) || '';
+
+    // Send invitation email
+    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/signup?token=${invitation.token}`;
+    const builtInvite = buildInvitationEmail(displayName || '', invitationLink);
+    const mailResult = await sendMail(normalizedEmail, builtInvite.subject, builtInvite.text, builtInvite.html);
+    
+    res.status(201).json({
+      invitation: {
+        id: invitation.id,
+        email: invitation.email,
+        clientId: invitation.clientId,
+        status: invitation.status,
+        sentAt: invitation.sentAt,
+        expiresAt: invitation.expiresAt
+      },
+      emailSent: mailResult.sent,
+      emailError: mailResult.sent ? undefined : (mailResult.error || 'Failed to send email')
+    });
+  } catch (e: any) {
+    console.error('Create invitation error', e);
+    res.status(500).json({ error: e?.message || 'Failed to create invitation' });
+  }
+});
+
+// Resend invitation
+router.post('/invitations/:id/resend', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const invitationId = parseInt(req.params.id);
+  
+  try {
+    const invitation = await prisma.invitation.findUnique({ where: { id: invitationId } });
+    if (!invitation) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    if (invitation.status !== 'pending') {
+      return res.status(400).json({ error: `Cannot resend ${invitation.status} invitation` });
+    }
+    
+    // Update sentAt timestamp
+    const updated = await prisma.invitation.update({
+      where: { id: invitationId },
+      data: {
+        sentAt: new Date(),
+        updatedAt: new Date()
+      },
+      include: { client: true }
+    });
+    
+    // Send email
+    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/signup?token=${updated.token}`;
+    const clientName = updated.client?.name || '';
+    const builtInvite2 = buildInvitationEmail(clientName || '', invitationLink);
+    const mailResult = await sendMail(updated.email, builtInvite2.subject, builtInvite2.text, builtInvite2.html);
+    
+    res.json({
+      invitation: {
+        id: updated.id,
+        email: updated.email,
+        status: updated.status,
+        sentAt: updated.sentAt,
+        expiresAt: updated.expiresAt
+      },
+      emailSent: mailResult.sent,
+      emailError: mailResult.sent ? undefined : (mailResult.error || 'Failed to send email')
+    });
+  } catch (e: any) {
+    console.error('Resend invitation error', e);
+    res.status(500).json({ error: e?.message || 'Failed to resend invitation' });
+  }
+});
+
+// List invitations for a client (with user account status)
+router.get('/invitations', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const clientIdParam = req.query.clientId as string | undefined;
+  
+  try {
+    let invitations;
+    if (clientIdParam) {
+      const clientId = parseInt(clientIdParam);
+      invitations = await prisma.invitation.findMany({
+        where: { clientId, invitationType: 'account_creation' },
+        include: { client: true },
+        orderBy: { sentAt: 'desc' }
+      });
+    } else {
+      invitations = await prisma.invitation.findMany({
+        where: { invitationType: 'account_creation' },
+        include: { client: true },
+        orderBy: { sentAt: 'desc' }
+      });
+    }
+    
+    // Enrich with user account status and derived clientId from user relationships
+    const enriched = await Promise.all(
+      invitations.map(async (inv) => {
+        const user = await prisma.user.findUnique({ where: { email: inv.email } });
+        
+        // If invitation has no explicit clientId but user exists, try to derive it from their business_owner role
+        let finalClientId = inv.clientId;
+        let finalClientName = inv.client?.name;
+        
+        if (!finalClientId && user) {
+          const businessOwnerAccess = await prisma.userRole.findFirst({
+            where: { userId: user.id, role: 'business_owner' },
+            include: { client: true }
+          });
+          if (businessOwnerAccess && businessOwnerAccess.client) {
+            finalClientId = businessOwnerAccess.clientId;
+            finalClientName = businessOwnerAccess.client.name;
+          }
+        }
+        
+        return {
+          id: inv.id,
+          email: inv.email,
+          clientId: finalClientId,
+          clientName: finalClientName,
+          status: inv.status,
+          sentAt: inv.sentAt,
+          acceptedAt: inv.acceptedAt,
+          expiresAt: inv.expiresAt,
+          accountCreated: !!user,
+          userId: user?.id
+        };
+      })
+    );
+    
+    res.json(enriched);
+  } catch (e: any) {
+    console.error('List invitations error', e);
+    res.status(500).json({ error: e?.message || 'Failed to list invitations' });
+  }
+});
+
+// Set user password (platform_admin only)
+router.post('/users/:id/password', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.id);
+  const password: string | undefined = req.body?.password;
+  if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const user = await prisma.user.update({ where: { id: userId }, data: { passwordHash: hash } });
+    res.json({ id: user.id, email: user.email, passwordSet: true });
+  } catch (e: any) {
+    console.error('Set password error', e);
+    res.status(500).json({ error: e?.message || 'Failed to set password' });
+  }
+});
+
+// Manager assignments management (platform_admin only)
+router.get('/managers/:userId/assignments', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.userId);
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    // Check if user has manager role in any client
+    const managerRole = await prisma.userRole.findFirst({ where: { userId, role: 'manager' } });
+    if (!managerRole) return res.status(400).json({ error: 'User is not a manager' });
+    const assignments = await prisma.userRole.findMany({ where: { userId, role: 'manager' } });
+    res.json(assignments.map(a => ({ clientId: a.clientId, createdAt: a.createdAt, active: a.managerActive })));
+  } catch (e: any) {
+    console.error('List assignments error', e);
+    res.status(500).json({ error: e?.message || 'Failed to list assignments' });
+  }
+});
+
+router.post('/managers/:userId/assignments', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.userId);
+  const clientIdParam: string | undefined = req.body?.clientId;
+  if (!clientIdParam) return res.status(400).json({ error: 'Missing clientId' });
+  const clientId = parseInt(clientIdParam);
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    // Check if user has manager role in any client
+    const managerRole = await prisma.userRole.findFirst({ where: { userId, role: 'manager' } });
+    if (!managerRole) return res.status(400).json({ error: 'User is not a manager' });
+    if (!user.emailVerified) return res.status(400).json({ error: 'Manager must verify email before assignments' });
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    const existing = await prisma.userRole.findFirst({
+      where: { userId, clientId, role: 'manager' }
+    });
+    if (existing) return res.status(409).json({ error: 'Assignment already exists' });
+    const assignment = await prisma.userRole.create({
+      data: { userId, clientId, role: 'manager', managerActive: true }
+    });
+    // Notify the manager of the new assignment
+    if ((global as any).notifyManagerAssignmentUpdate) {
+      (global as any).notifyManagerAssignmentUpdate(userId);
+    }
+    await logUserRoleChange({
+      userRoleId: assignment.id,
+      clientId,
+      userId,
+      changedBy: parseInt(req.user!.userId),
+      action: 'created',
+      field: 'role',
+      oldValue: null,
+      newValue: 'manager',
+    });
+    res.status(201).json({ clientId: assignment.clientId, createdAt: assignment.createdAt, active: assignment.managerActive });
+  } catch (e: any) {
+    console.error('Create assignment error', e);
+    res.status(500).json({ error: e?.message || 'Failed to create assignment' });
+  }
+});
+
+router.delete('/managers/:userId/assignments/:clientId', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.userId);
+  const clientId = parseInt(req.params.clientId);
+  try {
+    const existing = await prisma.userRole.findMany({
+      where: { userId, clientId, role: 'manager' }
+    });
+
+    await prisma.userRole.deleteMany({
+      where: { userId, clientId, role: 'manager' }
+    });
+
+    await Promise.all(existing.map(async (ur) => {
+      await logUserRoleChange({
+        userRoleId: ur.id,
+        clientId,
+        userId,
+        changedBy: parseInt(req.user!.userId),
+        action: 'deleted',
+        field: 'role',
+        oldValue: 'manager',
+        newValue: null,
+      });
+    }));
+    res.json({ removed: true });
+  } catch (e: any) {
+    console.error('Delete assignment error', e);
+    res.status(500).json({ error: e?.message || 'Failed to delete assignment' });
+  }
+});
+
+// Toggle assignment active state (platform_admin only)
+router.patch('/managers/:userId/assignments/:clientId', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.userId);
+  const clientId = parseInt(req.params.clientId);
+  const active: boolean | undefined = req.body?.active;
+  if (typeof active !== 'boolean') return res.status(400).json({ error: 'Missing active boolean' });
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const hasManagerRole = await prisma.userRole.findFirst({ where: { userId, role: 'manager' } });
+    if (!hasManagerRole) return res.status(400).json({ error: 'User is not a manager' });
+    if (!user.emailVerified) return res.status(400).json({ error: 'Manager must verify email before assignments' });
+    const before = await prisma.userRole.findFirst({ where: { userId, clientId, role: 'manager' } });
+    await prisma.userRole.updateMany({
+      where: { userId, clientId, role: 'manager' },
+      data: { managerActive: active }
+    });
+    if (before && before.managerActive !== active) {
+      await logUserRoleChange({
+        userRoleId: before.id,
+        clientId,
+        userId,
+        changedBy: parseInt(req.user!.userId),
+        action: 'updated',
+        field: 'managerActive',
+        oldValue: String(before.managerActive),
+        newValue: String(active),
+      });
+    }
+    res.json({ clientId, active });
+  } catch (e: any) {
+    console.error('Toggle assignment error', e);
+    res.status(500).json({ error: e?.message || 'Failed to update assignment' });
+  }
+});
+
+// Create user (platform_admin): supports role creation like manager
+router.post('/users', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const { email, role, clientId, id, firstName }: { email?: string, role?: 'manager' | 'business_owner' | 'delegate' | 'platform_admin', clientId?: string | number, id?: string | number, firstName?: string } = req.body || {};
+  const normalizedEmail = email?.trim().toLowerCase();
+  if (!normalizedEmail || !role) return res.status(400).json({ error: 'Missing email or role' });
+  try {
+    if ((role === 'business_owner' || role === 'delegate') && !clientId) return res.status(400).json({ error: 'clientId required for business_owner/delegate' });
+    if (role === 'manager' && clientId) {
+      // Manager is not tied to a single client; ignore provided clientId
+    }
+
+    const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingUser) {
+      // Get the user's roles to return in response
+      const userRoles = await prisma.userRole.findMany({ where: { userId: existingUser.id } });
+      const roleNames = userRoles.map(ur => ur.role);
+      return res.status(409).json({
+        error: 'A user with this email already exists',
+        existingUserId: existingUser.id,
+        roles: roleNames
+      });
+    }
+
+    const createData: any = {
+      email: normalizedEmail,
+      emailVerified: false // All users must verify email for security
+    };
+    const created = await prisma.user.create({
+      data: createData
+    });
+
+    // Create user_role entry for platform or client role
+    let clientIdNum: number | null = null;
+    if (role === 'platform_admin') {
+      // Platform admin role: clientId = null
+      await prisma.userRole.create({ data: { userId: created.id, clientId: null, role: 'platform_admin' } });
+    } else if (role === 'manager') {
+      // Manager role: clientId = null
+      await prisma.userRole.create({ data: { userId: created.id, clientId: null, role: 'manager' } });
+    } else {
+      // Client-scoped roles: business_owner, delegate
+      clientIdNum = (typeof clientId === 'string' ? parseInt(clientId) : clientId) ?? null;
+      if (role === 'business_owner' && clientIdNum !== null) {
+        await prisma.userRole.create({ data: { userId: created.id, clientId: clientIdNum, role: 'business_owner' } });
+      } else if (role === 'delegate' && clientIdNum !== null) {
+        await prisma.userRole.create({ data: { userId: created.id, clientId: clientIdNum, role: 'delegate' } });
+      }
+    }
+
+    const result: any = { id: created.id, email: created.email, role: role, emailVerified: created.emailVerified };
+    if (clientIdNum) {
+      result.clientId = clientIdNum;
+    }
+    
+    // Create email verification invitation for ALL admin-created users
+    const verificationToken = `verify_${Math.random().toString(36).slice(2, 18)}`;
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+    
+    await prisma.invitation.create({
+      data: {
+        email: normalizedEmail,
+        invitationType: 'email_verification',
+        token: verificationToken,
+        expiresAt,
+        status: 'pending'
+      }
+    });
+    
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+    const builtEmail = buildVerificationEmail(firstName || normalizedEmail.split('@')[0], verificationUrl);
+    const sendResult = await sendMail(normalizedEmail, builtEmail.subject, builtEmail.text, builtEmail.html);
+    result.emailSent = sendResult.sent;
+    if (!sendResult.sent) {
+      result.emailError = sendResult.error;
+      // Map common infra issues to friendlier text
+      if (sendResult.error?.toLowerCase().includes('integration_settings')) {
+        result.message = 'Email is not configured (integration_settings table missing). Run prisma migrate/db push and configure SMTP.';
+      } else if (sendResult.error?.toLowerCase().includes('smtp not configured')) {
+        result.message = 'SMTP not configured. Configure Email Settings before sending.';
+      } else {
+        result.message = 'Verification email could not be sent.';
+      }
+    }
+    res.status(201).json(result);
+  } catch (e: any) {
+    console.error('Create user error', e);
+    res.status(500).json({ error: e?.message || 'Failed to create user' });
+  }
+});
+
+// Resend verification email for manager
+router.post('/managers/:userId/resend-verification', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const userId = parseInt(req.params.userId);
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const hasManagerRole = await prisma.userRole.findFirst({ where: { userId, role: 'manager' } });
+    if (!hasManagerRole) return res.status(400).json({ error: 'User is not a manager' });
+    if (user.emailVerified) return res.status(400).json({ error: 'Manager already verified' });
+
+    // Check if email verification invitation already exists
+    let invToken = await prisma.invitation.findFirst({
+      where: { email: user.email, invitationType: 'email_verification', status: 'pending' }
+    });
+    
+    let token: string;
+    if (!invToken) {
+      token = `verify_${Math.random().toString(36).slice(2, 18)}`;
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+      invToken = await prisma.invitation.create({
+        data: {
+          email: user.email,
+          invitationType: 'email_verification',
+          token,
+          expiresAt,
+          status: 'pending'
+        }
+      });
+    } else {
+      token = invToken.token;
+    }
+
+    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+    const builtEmail = buildVerificationEmail(user.firstName || user.email.split('@')[0], verificationUrl);
+    const sendResult = await sendMail(user.email, builtEmail.subject, builtEmail.text, builtEmail.html);
+    if (!sendResult.sent) {
+      let friendly = sendResult.error || 'Failed to send verification email';
+      const lower = friendly.toLowerCase();
+      if (lower.includes('integration_settings')) {
+        friendly = 'Email is not configured (integration settings table missing). Run prisma migrate/db push and configure SMTP.';
+      } else if (lower.includes('smtp not configured')) {
+        friendly = 'SMTP not configured. Configure Email Settings before resending.';
+      }
+      return res.status(500).json({ error: friendly, rawError: sendResult.error });
+    }
+    res.json({ sent: true });
+  } catch (e: any) {
+    console.error('Resend verification error', e);
+    res.status(500).json({ error: e?.message || 'Failed to resend verification email' });
+  }
+});
+
+// Email settings (platform_admin only)
+router.get('/email-settings', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  try {
+    const settings = await getEmailSettings();
+    if (!settings) return res.json({ configured: false });
+    res.json({ configured: true, ...settings });
+  } catch (e: any) {
+    console.error('Get email settings error', e);
+    res.status(500).json({ error: e?.message || 'Failed to get email settings' });
+  }
+});
+
+router.put('/email-settings', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const { host, port, username, password, fromAddress } = req.body || {};
+  if (!host || !port || !username || !fromAddress) {
+    return res.status(400).json({ error: 'Missing required fields: host, port, username, fromAddress' });
+  }
+  try {
+    // Always use secure=true (TLS on port 465)
+    await updateEmailSettings({ host, port: Number(port), secure: true, username, password, fromAddress });
+    res.json({ saved: true });
+  } catch (e: any) {
+    console.error('Update email settings error', e);
+    res.status(500).json({ error: e?.message || 'Failed to update email settings' });
+  }
+});
+// Test email - allows admin to send a test email to verify SMTP configuration
+router.post('/email-test', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const { testEmail } = req.body || {};
+  if (!testEmail) {
+    return res.status(400).json({ error: 'Missing testEmail field' });
+  }
+  try {
+    console.log('[email-test] Sending test email to:', testEmail);
+    const result = await sendMail(
+      testEmail,
+      'Test Email from PestControl CRM - look we changed it',
+      'look we changed it. This is a test email to verify your SMTP configuration is working correctly.',
+      '<p>look we changed it.</p><p>This is a test email to verify your SMTP configuration is working correctly.</p><p>If you received this, email sending is operational!</p>'
+    );
+    if (result.sent) {
+      res.json({ 
+        success: true, 
+        messageId: result.messageId, 
+        accepted: result.accepted,
+        rejected: result.rejected,
+        response: result.response,
+        message: 'Test email sent successfully!' 
+      });
+    } else {
+      res.status(500).json({ error: result.error || 'Failed to send test email' });
+    }
+  } catch (e: any) {
+    console.error('Email test error', e);
+    res.status(500).json({ error: e?.message || 'Failed to send test email' });
+  }
+});
+
+// Resend verification email for a user by email (platform_admin only)
+router.post('/resend-verification', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const { email } = req.body || {};
+  if (!email || !email.trim()) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+  const normalizedEmail = email.trim().toLowerCase();
+  try {
+    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Create a fresh verification token
+    const verificationToken = `verify_${Math.random().toString(36).slice(2, 18)}`;
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const invitation = await prisma.invitation.create({
+      data: {
+        email: normalizedEmail,
+        invitationType: 'email_verification',
+        token: verificationToken,
+        status: 'pending',
+        expiresAt
+      }
+    });
+
+    const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+    const builtVer = buildVerificationEmail(user.firstName || '', verificationLink);
+    console.log('[resend-verification] Sending verification email to:', normalizedEmail, 'token:', verificationToken);
+    const result = await sendMail(normalizedEmail, builtVer.subject, builtVer.text, builtVer.html);
+
+    if (result.sent) {
+      res.json({
+        success: true,
+        invitationId: invitation.id,
+        token: verificationToken,
+        messageId: result.messageId,
+        accepted: result.accepted,
+        response: result.response
+      });
+    } else {
+      res.status(500).json({ error: result.error || 'Failed to send verification email' });
+    }
+  } catch (e: any) {
+    console.error('[resend-verification] Error:', e);
+    res.status(500).json({ error: e?.message || 'Failed to resend verification email' });
+  }
+});
+
+// Query user role audit logs (platform_admin only)
+router.get('/permission-audit', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  
+  const clientIdParam = req.query.clientId as string | undefined;
+  const userIdParam = req.query.userId as string | undefined;
+  const changedByParam = req.query.changedBy as string | undefined;
+  const fromParam = req.query.from as string | undefined;
+  const toParam = req.query.to as string | undefined;
+  const fieldParam = req.query.field as string | undefined;
+  const pageParam = req.query.page as string | undefined;
+  const limitParam = req.query.limit as string | undefined;
+
+  const page = Math.max(1, parseInt(pageParam || '1'));
+  const limit = Math.min(100, Math.max(1, parseInt(limitParam || '50')));
+  const skip = (page - 1) * limit;
+
+  try {
+    const where: any = {};
+
+    if (clientIdParam) where.clientId = parseInt(clientIdParam);
+    if (userIdParam) where.userId = parseInt(userIdParam);
+    if (changedByParam) where.changedBy = parseInt(changedByParam);
+    if (fieldParam) where.field = fieldParam;
+
+    if (fromParam || toParam) {
+      where.createdAt = {};
+      if (fromParam) where.createdAt.gte = new Date(fromParam);
+      if (toParam) where.createdAt.lte = new Date(toParam);
+    }
+
+    const [logs, total] = await Promise.all([
+      prisma.userRoleAuditLog.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          userRole: {
+            select: {
+              id: true,
+              userId: true,
+              clientId: true,
+              role: true
+            }
+          }
+        }
+      }),
+      prisma.userRoleAuditLog.count({ where })
+    ]);
+
+    res.json({
+      logs: logs.map(log => ({
+        id: log.id,
+        userRoleId: log.userRoleId,
+        clientId: log.clientId,
+        userId: log.userId,
+        changedBy: log.changedBy,
+        action: log.action,
+        field: log.field,
+        oldValue: log.oldValue,
+        newValue: log.newValue,
+        reason: log.reason,
+        requestId: log.requestId,
+        createdAt: log.createdAt,
+        userRole: log.userRole
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (e: any) {
+    console.error('Query permission audit error', e);
+    res.status(500).json({ error: e?.message || 'Failed to query audit logs' });
+  }
+});
+
+// Get signup event log (for diagnostics)
+router.get('/signup-events', async (req: Request, res: Response) => {
+  if (!requirePlatformAdmin(req, res)) return;
+  const log = getSignupEventLog();
+  res.json({ events: log, count: log.length });
+});
+
+export default router;
