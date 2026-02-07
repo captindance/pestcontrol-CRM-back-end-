@@ -113,7 +113,7 @@ app.get('/api/admin/managers/updates', (req, res, next) => {
     (req as any).user = decoded;
     
     // Only platform_admin can subscribe to manager updates
-    if (decoded.role !== 'platform_admin') {
+    if (!decoded.roles || !decoded.roles.includes('platform_admin')) {
       return res.status(403).json({ error: 'Unauthorized: platform_admin role required' });
     }
 

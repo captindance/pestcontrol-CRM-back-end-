@@ -1,14 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db/prisma.js';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { getEmailSettings, updateEmailSettings, sendMail, buildInvitationEmail, buildVerificationEmail } from '../services/emailService.js';
 import { logUserRoleChange } from '../services/auditService.js';
 
 const router = Router();
 
-// Helper to generate secure random token
+// Helper to generate cryptographically secure random token
 function generateInvitationToken(): string {
-  return `inv_${Math.random().toString(36).slice(2, 32)}`;
+  return `inv_${crypto.randomBytes(24).toString('base64url')}`;
 }
 
 // Simple role check helper
