@@ -1,0 +1,45 @@
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables (NEVER commit secrets!)
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# Database files
+*.sql
+*.sqlite
+*.db
+
+# Database backups (CRITICAL - Never commit!)
+**/Database_Backups/
+Database_Backups/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Prisma
+prisma/dev.db
+prisma/migrations/*.sql.bak
+
+# TypeScript
+*.tsbuildinfo
