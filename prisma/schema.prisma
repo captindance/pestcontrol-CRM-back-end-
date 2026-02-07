@@ -1,0 +1,229 @@
+// Prisma schema mapping existing MySQL tables created earlier.
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Client {
+  id        Int      @id @default(autoincrement()) @map("id")
+  name      String   @map("name")
+  createdAt DateTime @default(now()) @map("created_at")
+  userRoles UserRole[]
+  reports   Report[]
+  databaseConnections DatabaseConnection[]
+  invitations Invitation[]
+
+  @@map("clients")
+}
+
+model User {
+  id        Int      @id @default(autoincrement()) @map("id")
+  email     String   @unique @map("email")
+  firstName String?  @map("first_name")
+  lastName  String?  @map("last_name")
+  passwordHash String? @map("password_hash")
+  emailVerified Boolean @default(false) @map("email_verified")
+  createdAt DateTime @default(now()) @map("created_at")
+  userRoles UserRole[]
+
+  @@map("users")
+}
+
+// Unified role enumeration for both platform and client-scoped roles
+enum Role {
+  // Platform-level roles (stored with clientId = null in user_roles)
+  platform_admin
+
+  // Multi-tenant roles (stored with clientId in user_roles)
+  business_owner
+  delegate
+  viewer
+  manager
+}
+
+// Role assignments table: unified source of truth for all user roles
+// Platform roles: clientId = null, role = 'platform_admin'
+// Client roles: clientId = <id>, role = 'business_owner' | 'delegate' | 'viewer' | 'manager'
+// This design allows users to have multiple roles (one per client + platform roles)
+// Permissions provide granular control - role sets defaults, permissions can override
+model UserRole {
+  id        Int                 @id @default(autoincrement()) @map("id")
+  userId    Int                 @map("user_id")
+  clientId  Int?                @map("client_id")  // null for platform-level roles, populated for client-scoped roles
+  role      Role                @map("role")
+  
+  // Granular permissions - null means use role defaults, true/false explicitly grants/denies
+  canViewReports      Boolean?  @map("can_view_reports")
+  canCreateReports    Boolean?  @map("can_create_reports")
+  canEditReports      Boolean?  @map("can_edit_reports")
+  canDeleteReports    Boolean?  @map("can_delete_reports")
+  canManageConnections Boolean? @map("can_manage_connections")
+  canInviteUsers      Boolean?  @map("can_invite_users")
+  canManageUsers      Boolean?  @map("can_manage_users")
+  
+  managerActive Boolean          @default(true) @map("manager_active")  // For manager role only: whether assignment is active
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client    Client?             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connectionPermissions ConnectionPermission[]
+
+  auditLogs UserRoleAuditLog[]
+
+  @@map("user_roles")
+  @@unique([userId, clientId, role])
+  @@index([clientId])
+  @@index([userId])
+  @@index([userId, clientId, managerActive])
+  @@index([userId, role])  // For efficient platform role lookups
+}
+
+model UserRoleAuditLog {
+  id         Int       @id @default(autoincrement()) @map("id")
+  userRoleId Int?      @map("user_role_id")
+  clientId   Int?      @map("client_id")
+  userId     Int?      @map("user_id")
+  changedBy  Int?      @map("changed_by")
+  action     String    @map("action")
+  field      String?   @map("field")
+  oldValue   String?   @map("old_value")
+  newValue   String?   @map("new_value")
+  reason     String?   @map("reason")
+  requestId  String?   @map("request_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  userRole   UserRole? @relation(fields: [userRoleId], references: [id], onDelete: SetNull)
+
+  @@map("user_role_audit_log")
+  @@index([clientId, createdAt])
+  @@index([userId, createdAt])
+  @@index([changedBy, createdAt])
+}
+
+// Granular per-connection access control
+model ConnectionPermission {
+  id           Int      @id @default(autoincrement()) @map("id")
+  userRoleId   Int      @map("user_role_id")
+  connectionId Int      @map("connection_id")
+  canView      Boolean  @default(true) @map("can_view")
+  canEdit      Boolean  @default(false) @map("can_edit")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  userRole     UserRole @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  connection   DatabaseConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("connection_permissions")
+  @@unique([userRoleId, connectionId])
+  @@index([connectionId])
+  @@index([userRoleId])
+}
+
+model Report {
+  id        Int          @id @default(autoincrement()) @map("id")
+  clientId  Int          @map("client_id")
+  name      String       @map("name")
+  queryKey  String?      @map("query_key")
+  sqlQuery  String?      @db.LongText @map("sql_query")  // SQL query for database connections - use LongText for large queries
+  status    ReportStatus @default(idle) @map("status")
+  connectionId Int?      @map("connection_id")
+  chartConfig Json?      @map("chart_config")  // Chart configuration: selected fields, chart type, etc.
+  createdAt DateTime     @default(now()) @map("created_at")
+  deletedAt DateTime?    @map("deleted_at")  // Soft delete timestamp
+  startedAt DateTime?    @map("started_at")  // Execution timestamp
+  finishedAt DateTime?   @map("finished_at")  // Completion timestamp
+  dataJson   Json?       @map("data_json")  // Execution result data
+  error      String?     @map("error")  // Execution error message
+  client    Client       @relation(fields: [clientId], references: [id])
+  connection DatabaseConnection? @relation(fields: [connectionId], references: [id])
+
+  @@map("reports")
+  @@index([clientId])
+  @@index([connectionId])
+  @@index([clientId, deletedAt])  // For filtering active reports
+}
+
+enum ReportStatus {
+  idle
+  running
+}
+
+model DatabaseConnection {
+  id        Int      @id @default(autoincrement()) @map("id")
+  clientId  Int      @map("client_id")
+  name      String   @map("name")  // Only field left unencrypted for display purposes
+  // All connection details encrypted for security
+  dataIv        String @map("data_enc_iv")
+  dataTag       String @map("data_enc_tag")
+  dataCipher    String @db.Text @map("data_enc_cipher")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")  // Soft delete timestamp
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  reports   Report[]
+  connectionPermissions ConnectionPermission[]
+
+  @@map("database_connections")
+  @@index([clientId])
+  @@index([clientId, name])
+  @@index([clientId, deletedAt])  // For filtering active connections
+}
+
+// Generic, future-proof integration settings table for communication/integration providers
+enum IntegrationKind {
+  email
+  database
+  sms
+  webhook
+  push
+  calendar
+  contacts
+  other
+}
+
+model IntegrationSetting {
+  id        Int             @id @default(autoincrement()) @map("id")
+  kind      IntegrationKind @map("kind")
+  provider  String          @map("provider") // e.g., smtp, twilio, sendgrid, webhook, mysql
+  clientId  Int?            @map("client_id") // null for platform-wide (email), populated for per-client (database creds)
+  configJson Json           @map("config_json") // non-sensitive config (host, port, username, from, etc.)
+  secretsIv     String      @map("secrets_enc_iv")
+  secretsTag    String      @map("secrets_enc_tag")
+  secretsCipher String      @map("secrets_enc_cipher") // encrypted JSON string of secrets
+  active    Boolean         @default(true) @map("active")
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  @@map("integration_settings")
+  @@index([kind, provider])
+  @@index([clientId])
+}
+
+// Invitations table for tracking account creation, password resets, and email verification
+model Invitation {
+  id                Int       @id @default(autoincrement()) @map("id")
+  email             String    @map("email")
+  clientId          Int?      @map("client_id")  // Nullable for platform-wide actions (account_creation, password_reset)
+  invitationType    String    @default("account_creation") @map("invitation_type")  // 'account_creation', 'password_reset', 'email_verification'
+  status            String    @default("pending") @map("status")  // 'pending', 'accepted', 'expired'
+  token             String    @unique @map("token")  // Secure unique token
+  sentAt            DateTime  @default(now()) @map("sent_at")
+  acceptedAt        DateTime? @map("accepted_at")
+  expiresAt         DateTime  @map("expires_at")  // Calculated when creating invitation (now + 30 days)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  client            Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@map("invitations")
+  // account_creation invites are global (clientId=null), so unique by email+type
+  // password_reset invites are global (clientId=null), so unique by email+type
+  // email_verification invites are client-scoped (clientId provided)
+  @@unique([email, invitationType, clientId])
+  @@index([email, status])
+  @@index([token])
+  @@index([clientId, status])
+}
