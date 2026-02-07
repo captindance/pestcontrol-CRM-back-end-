@@ -3,6 +3,7 @@ import { prisma } from '../db/prisma.js';
 import { getUserPrimaryClientId } from '../db/clientAccess.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { sendMail, buildVerificationEmail, logSignupEvent, getSignupEventLog } from '../services/emailService.js';
 import { getJWTConfig } from '../config/jwt.config.js';
 
@@ -216,7 +217,7 @@ router.post('/signup', async (req: Request, res: Response) => {
     }
     
     // Create email verification invitation - always needed for password setup
-    const verificationToken = `verify_${Math.random().toString(36).slice(2, 18)}`;
+    const verificationToken = `verify_${crypto.randomBytes(16).toString('base64url')}`;
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30);
     

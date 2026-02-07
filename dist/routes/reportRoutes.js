@@ -3,24 +3,25 @@ import { prisma } from '../db/prisma.js';
 import { enqueueReport } from '../reportRunner.js';
 import { executeAndCacheQuery, getCachedResults } from '../services/queryService.js';
 import { userHasPermission } from '../services/permissionService.js';
+import { parseIntSafe } from '../utils/validation.js';
 const router = Router();
 // Helper: check if user has edit permissions
 async function canEditReports(req, clientId) {
     if (!req.user?.userId)
         return false;
-    const userId = parseInt(req.user.userId);
+    const userId = parseIntSafe(req.user.userId, 'userId');
     return await userHasPermission(userId, clientId, 'canEditReports');
 }
 async function canCreateReports(req, clientId) {
     if (!req.user?.userId)
         return false;
-    const userId = parseInt(req.user.userId);
+    const userId = parseIntSafe(req.user.userId, 'userId');
     return await userHasPermission(userId, clientId, 'canCreateReports');
 }
 async function canDeleteReports(req, clientId) {
     if (!req.user?.userId)
         return false;
-    const userId = parseInt(req.user.userId);
+    const userId = parseIntSafe(req.user.userId, 'userId');
     return await userHasPermission(userId, clientId, 'canDeleteReports');
 }
 async function validateConnection(clientId, connectionId) {
@@ -34,22 +35,27 @@ router.get('/', async (req, res) => {
     if (!req.tenantId) {
         return res.status(400).json({ error: 'Client context required; provide x-tenant-id header' });
     }
-    const tenantId = parseInt(req.tenantId);
-    const list = await prisma.report.findMany({ where: { clientId: tenantId, deletedAt: null }, orderBy: { createdAt: 'asc' } });
-    const connections = await prisma.databaseConnection.findMany({ where: { clientId: tenantId, deletedAt: null } });
-    const connList = connections.map(c => ({ id: c.id, name: c.name }));
-    res.json({
-        reports: list.map(r => ({
-            id: r.id,
-            name: r.name,
-            status: r.status,
-            queryKey: r.queryKey,
-            connectionId: r.connectionId,
-            sqlQuery: r.sqlQuery,
-            chartConfig: r.chartConfig,
-        })),
-        availableConnections: connList
-    });
+    try {
+        const tenantId = parseIntSafe(req.tenantId, 'tenantId');
+        const list = await prisma.report.findMany({ where: { clientId: tenantId, deletedAt: null }, orderBy: { createdAt: 'asc' } });
+        const connections = await prisma.databaseConnection.findMany({ where: { clientId: tenantId, deletedAt: null } });
+        const connList = connections.map(c => ({ id: c.id, name: c.name }));
+        res.json({
+            reports: list.map(r => ({
+                id: r.id,
+                name: r.name,
+                status: r.status,
+                queryKey: r.queryKey,
+                connectionId: r.connectionId,
+                sqlQuery: r.sqlQuery,
+                chartConfig: r.chartConfig,
+            })),
+            availableConnections: connList
+        });
+    }
+    catch (e) {
+        res.status(400).json({ error: e?.message || 'Invalid request' });
+    }
 });
 // Create report (owner, delegate, platform_admin only)
 router.post('/', async (req, res) => {

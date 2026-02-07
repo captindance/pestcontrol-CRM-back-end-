@@ -4,6 +4,7 @@ import { getUserClientIds, getUserRoleForClient } from '../db/clientAccess.js';
 import { sendMail } from '../services/emailService.js';
 import { userHasPermission, getUserPermissions } from '../services/permissionService.js';
 import { logUserRoleChange } from '../services/auditService.js';
+import crypto from 'crypto';
 
 const router = Router();
 
@@ -144,7 +145,7 @@ router.post('/:id/users', authorizeOwnerOrAdmin, async (req: Request, res: Respo
     });
 
     // Create email verification invitation
-    const verificationToken = `verify_${Math.random().toString(36).slice(2, 18)}`;
+    const verificationToken = `verify_${crypto.randomBytes(16).toString('base64url')}`;
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30);
     await prisma.invitation.create({
