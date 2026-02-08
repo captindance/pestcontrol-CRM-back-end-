@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import 'dotenv/config';
 // Use .js extensions for ESM runtime; TypeScript NodeNext resolution maps to .ts sources.
 import { authMiddleware } from './middleware/auth.js';
@@ -14,6 +15,7 @@ import connectionPermissionRoutes from './routes/connectionPermissionRoutes.js';
 import { prisma } from './db/prisma.js';
 import jwt from 'jsonwebtoken';
 import { initializeJWTConfig, getJWTConfig } from './config/jwt.config.js';
+import { logger } from './utils/logger.js';
 
 // Initialize and validate JWT configuration at startup
 initializeJWTConfig();
@@ -21,6 +23,23 @@ initializeJWTConfig();
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Rate limiting - prevent brute force attacks
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 login requests per windowMs
+  message: 'Too many login attempts from this IP, please try again after 15 minutes',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // SSE: store connected clients for admin updates
 const sseAdminClients = new Set<any>();
@@ -31,7 +50,7 @@ const sseManagerClients = new Map<string, Set<any>>();
 // Export global function to notify admins of manager verification
 (global as any).notifyManagerUpdate = () => {
   const data = JSON.stringify({ type: 'managerVerified', timestamp: new Date().toISOString() });
-  console.log('[SSE] Broadcasting managerVerified event to', sseAdminClients.size, 'admin clients');
+  logger.sse('Broadcasting managerVerified event to', sseAdminClients.size, 'admin clients');
   sseAdminClients.forEach(res => {
     res.write(`event: managerVerified\ndata: ${data}\n\n`);
   });
@@ -42,7 +61,7 @@ const sseManagerClients = new Map<string, Set<any>>();
   const data = JSON.stringify({ type: 'assignmentUpdated', timestamp: new Date().toISOString() });
   const managerConnections = sseManagerClients.get(userId);
   if (managerConnections && managerConnections.size > 0) {
-    console.log(`[SSE] Broadcasting assignmentUpdated event to ${userId}`);
+    logger.sse(`Broadcasting assignmentUpdated event to ${userId}`);
     managerConnections.forEach(res => {
       res.write(`event: assignmentUpdated\ndata: ${data}\n\n`);
     });
@@ -52,7 +71,7 @@ const sseManagerClients = new Map<string, Set<any>>();
 // Basic request logging (dev only)
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, _res, next) => {
-    console.log(`[req] ${req.method} ${req.url}`);
+    logger.request(`${req.method} ${req.url}`);
     next();
   });
 }
@@ -139,10 +158,10 @@ app.get('/api/admin/managers/updates', (req, res, next) => {
     req.on('close', () => {
       clearInterval(heartbeatInterval);
       sseAdminClients.delete(res);
-      console.log('[SSE] Admin client disconnected');
+      logger.sse('Admin client disconnected');
     });
   } catch (e: any) {
-    console.error('[SSE] Token verification failed:', e?.message);
+    logger.error('[SSE] Token verification failed:', e?.message);
     return res.status(401).json({ error: 'Unauthorized: invalid token' });
   }
 });
@@ -195,10 +214,10 @@ app.get('/api/manager/assignments/updates', (req, res) => {
           sseManagerClients.delete(userId);
         }
       }
-      console.log(`[SSE] Manager ${userId} disconnected`);
+      logger.sse(`Manager ${userId} disconnected`);
     });
   } catch (e: any) {
-    console.error('[SSE] Token verification failed:', e?.message);
+    logger.error('[SSE] Token verification failed:', e?.message);
     return res.status(401).json({ error: 'Unauthorized: invalid token' });
   }
 });
@@ -206,8 +225,13 @@ app.get('/api/manager/assignments/updates', (req, res) => {
 // Admin routes (no tenant restriction, platform_admin can manage all clients)
 app.use('/api/admin', authMiddleware, adminRoutes);
 
-// Auth routes
+// Auth routes with rate limiting
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/signup', authLimiter);
 app.use('/api/auth', authRoutes);
+
+// General API rate limiting
+app.use('/api', apiLimiter);
 
 // Manager routes (auth only; no tenant middleware)
 app.use('/api/manager', authMiddleware, managerRoutes);

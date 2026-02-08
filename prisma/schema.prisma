@@ -103,6 +103,7 @@ model UserRoleAuditLog {
   @@index([clientId, createdAt])
   @@index([userId, createdAt])
   @@index([changedBy, createdAt])
+  @@index([userRoleId])  // For efficient audit queries by role
 }
 
 // Granular per-connection access control
@@ -138,13 +139,14 @@ model Report {
   finishedAt DateTime?   @map("finished_at")  // Completion timestamp
   dataJson   Json?       @map("data_json")  // Execution result data
   error      String?     @map("error")  // Execution error message
-  client    Client       @relation(fields: [clientId], references: [id])
-  connection DatabaseConnection? @relation(fields: [connectionId], references: [id])
+  client    Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connection DatabaseConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
   @@map("reports")
   @@index([clientId])
   @@index([connectionId])
   @@index([clientId, deletedAt])  // For filtering active reports
+  @@index([clientId, status, deletedAt])  // For filtering by status
 }
 
 enum ReportStatus {
@@ -171,6 +173,7 @@ model DatabaseConnection {
   @@index([clientId])
   @@index([clientId, name])
   @@index([clientId, deletedAt])  // For filtering active connections
+  @@unique([id, clientId])  // Support for tenant-scoped compound foreign key validation
 }
 
 // Generic, future-proof integration settings table for communication/integration providers
@@ -226,4 +229,5 @@ model Invitation {
   @@index([email, status])
   @@index([token])
   @@index([clientId, status])
+  @@index([status, expiresAt])  // For efficient cleanup of expired invitations
 }
