@@ -22,16 +22,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 // Rate limiting - prevent brute force attacks
+// More lenient in development, strict in production
+const isDev = process.env.NODE_ENV !== 'production';
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Limit each IP to 5 login requests per windowMs
+    max: isDev ? 100 : 5, // Dev: 100 attempts, Prod: 5 attempts
     message: 'Too many login attempts from this IP, please try again after 15 minutes',
     standardHeaders: true,
     legacyHeaders: false,
 });
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    max: isDev ? 1000 : 100, // Dev: 1000 requests, Prod: 100 requests
     message: 'Too many requests from this IP, please try again later',
     standardHeaders: true,
     legacyHeaders: false,

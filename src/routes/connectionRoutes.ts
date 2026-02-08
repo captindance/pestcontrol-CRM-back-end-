@@ -85,16 +85,19 @@ router.get('/', async (req: Request, res: Response) => {
   if (!tenantId) return;
   if (!(await ensureClientAccess(req, res, tenantId))) return;
   
+  // Platform admins can always view connections
+  const isPlatformAdmin = req.user?.roles?.includes('platform_admin');
+  
   // Check if user has permission to view reports (which includes viewing connections)
   const userId = parseInt(req.user!.userId);
-  const canView = await userHasPermission(userId, tenantId, 'canViewReports');
+  const canView = isPlatformAdmin || await userHasPermission(userId, tenantId, 'canViewReports');
   if (!canView) {
     return res.status(403).json({ error: 'Forbidden: insufficient permissions to view connections' });
   }
   
   try {
     // Include connection details only for users who can manage connections
-    const canManage = await userHasPermission(userId, tenantId, 'canManageConnections');
+    const canManage = isPlatformAdmin || await userHasPermission(userId, tenantId, 'canManageConnections');
     const rows = await listConnections(tenantId, canManage);
     res.json(rows);
   } catch (e: any) {
@@ -109,9 +112,12 @@ router.post('/', async (req: Request, res: Response) => {
   if (!tenantId) return;
   if (!(await ensureClientAccess(req, res, tenantId))) return;
   
+  // Platform admins can always manage connections
+  const isPlatformAdmin = req.user?.roles?.includes('platform_admin');
+  
   // Check if user has permission to manage connections
   const userId = parseInt(req.user!.userId);
-  const canManage = await userHasPermission(userId, tenantId, 'canManageConnections');
+  const canManage = isPlatformAdmin || await userHasPermission(userId, tenantId, 'canManageConnections');
   if (!canManage) {
     return res.status(403).json({ error: 'Forbidden: insufficient permissions to create connections' });
   }
@@ -182,9 +188,12 @@ router.delete('/:id', async (req: Request, res: Response) => {
   if (!(await ensureClientAccess(req, res, tenantId))) return;
   const connectionId = parseInt(req.params.id);
   
+  // Platform admins can always manage connections
+  const isPlatformAdmin = req.user?.roles?.includes('platform_admin');
+  
   // Check if user has permission to manage connections (delete requires management permission)
   const userId = parseInt(req.user!.userId);
-  const canManage = await userHasPermission(userId, tenantId, 'canManageConnections');
+  const canManage = isPlatformAdmin || await userHasPermission(userId, tenantId, 'canManageConnections');
   if (!canManage) {
     return res.status(403).json({ error: 'Forbidden: insufficient permissions to delete connections' });
   }
@@ -209,9 +218,12 @@ router.post('/test', async (req: Request, res: Response) => {
   if (!tenantId) return;
   if (!(await ensureClientAccess(req, res, tenantId))) return;
   
+  // Platform admins can always manage connections
+  const isPlatformAdmin = req.user?.roles?.includes('platform_admin');
+  
   // Check if user has permission to manage connections (testing new connections requires management)
   const userId = parseInt(req.user!.userId);
-  const canManage = await userHasPermission(userId, tenantId, 'canManageConnections');
+  const canManage = isPlatformAdmin || await userHasPermission(userId, tenantId, 'canManageConnections');
   if (!canManage) {
     return res.status(403).json({ error: 'Forbidden: insufficient permissions to test connections' });
   }
