@@ -250,7 +250,10 @@ router.post('/:id/execute-query', async (req: Request, res: Response) => {
     if (!report) return res.status(404).json({ error: 'Report not found' });
     
     // Use connectionId from request (for editing) or from saved report
-    const connectionId = requestConnectionId || report.connectionId;
+    // Parse connectionId to integer if it's a string
+    const connectionId = requestConnectionId 
+      ? parseInt(requestConnectionId) 
+      : report.connectionId;
     
     if (!connectionId) {
       return res.status(400).json({ error: 'Report must have a database connection selected' });
