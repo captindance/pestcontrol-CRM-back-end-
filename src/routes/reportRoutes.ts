@@ -239,7 +239,7 @@ router.post('/:id/execute-query', async (req: Request, res: Response) => {
   }
   
   const reportId = parseInt(req.params.id);
-  const { sqlQuery } = req.body;
+  const { sqlQuery, connectionId: requestConnectionId } = req.body;
 
   if (!sqlQuery) {
     return res.status(400).json({ error: 'SQL query is required' });
@@ -248,11 +248,15 @@ router.post('/:id/execute-query', async (req: Request, res: Response) => {
   try {
     const report = await prisma.report.findFirst({ where: { id: reportId, clientId: tenantId } });
     if (!report) return res.status(404).json({ error: 'Report not found' });
-    if (!report.connectionId) {
+    
+    // Use connectionId from request (for editing) or from saved report
+    const connectionId = requestConnectionId || report.connectionId;
+    
+    if (!connectionId) {
       return res.status(400).json({ error: 'Report must have a database connection selected' });
     }
 
-    const result = await executeAndCacheQuery(tenantId, reportId, report.connectionId, sqlQuery);
+    const result = await executeAndCacheQuery(tenantId, reportId, connectionId, sqlQuery);
     
     // Update the report with the SQL query
     await prisma.report.update({
