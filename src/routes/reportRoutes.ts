@@ -252,11 +252,12 @@ router.post('/:id/execute-query', async (req: Request, res: Response) => {
     // Use connectionId from request (for editing) or from saved report
     // Parse connectionId to integer if it's a string
     const connectionId = requestConnectionId 
-      ? parseInt(requestConnectionId) 
+      ? parseInt(String(requestConnectionId), 10) 
       : report.connectionId;
     
-    if (!connectionId) {
-      return res.status(400).json({ error: 'Report must have a database connection selected' });
+    // Ensure connectionId is a valid number
+    if (!connectionId || isNaN(connectionId)) {
+      return res.status(400).json({ error: 'Report must have a valid database connection selected' });
     }
 
     const result = await executeAndCacheQuery(tenantId, reportId, connectionId, sqlQuery);
