@@ -287,6 +287,7 @@ export async function executeAndCacheQuery(clientId, reportId, connectionId, sql
             rows: rowArray,
             columns,
             rowCount: rowArray.length,
+            executionTimeMs,
         };
     }
     catch (error) {
