@@ -120,8 +120,9 @@ function validateSQLQuery(sqlQuery: string): void {
 
   // Prevent UNION-based queries to prevent cross-table data extraction
   // UNION queries can extract data from other tables the user shouldn't access
-  if (/\bUNION\b/i.test(trimmedQuery)) {
-    throw new Error('UNION queries are not allowed - only direct SELECT is permitted');
+  // Allow UNION ALL for combining results from same table (common for pivot/aggregate queries)
+  if (/\bUNION\b(?!\s+ALL\b)/i.test(trimmedQuery)) {
+    throw new Error('UNION queries are not allowed - only UNION ALL is permitted for combining results');
   }
 
   // Prevent information_schema and mysql schema access
