@@ -259,6 +259,7 @@ router.post('/:id/execute-query', async (req, res) => {
             rows: result.rows,
             columns: result.columns,
             rowCount: result.rowCount,
+            executionTimeMs: result.executionTimeMs,
         });
     }
     catch (e) {
