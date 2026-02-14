@@ -6,6 +6,7 @@ interface QueryResult {
   rows: any[];
   columns: string[];
   rowCount: number;
+  executionTimeMs: number;
 }
 
 /**
