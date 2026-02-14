@@ -342,6 +342,7 @@ export async function executeAndCacheQuery(
       rows: rowArray,
       columns,
       rowCount: rowArray.length,
+      executionTimeMs,
     };
   } catch (error: any) {
     // Save error to database
