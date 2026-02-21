@@ -15,6 +15,7 @@ build/
 
 # Database files
 *.sql
+!prisma/migrations/**/*.sql
 *.sqlite
 *.db
 
@@ -43,3 +44,10 @@ prisma/migrations/*.sql.bak
 
 # TypeScript
 *.tsbuildinfo
+
+# Backup / scratch files
+*.backup
+*.bak
+*.broken
+*.working
+*.tmp
