@@ -26,6 +26,7 @@ Database_Backups/
 # Logs
 logs/
 *.log
+redis/dump.rdb
 
 # IDE
 .vscode/
