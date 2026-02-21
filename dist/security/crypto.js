@@ -6,6 +6,20 @@ function getKey() {
     }
     return Buffer.from(KEY_HEX, 'hex');
 }
+/**
+ * Validate that encryption key is properly configured
+ * Should be called at startup before any encryption operations
+ */
+export function validateEncryptionKey() {
+    try {
+        getKey(); // Will throw if key is invalid
+        console.log('[crypto] ✓ Encryption key validated');
+    }
+    catch (error) {
+        console.error('[crypto] ✗ Encryption key validation failed:', error.message);
+        throw new Error('DB_ENCRYPTION_KEY is not properly configured. Server cannot start.');
+    }
+}
 export function encryptSecret(plain) {
     const key = getKey();
     const iv = crypto.randomBytes(12); // GCM recommended 96-bit nonce

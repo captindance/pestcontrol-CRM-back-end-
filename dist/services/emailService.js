@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { prisma } from '../db/prisma.js';
 import { encryptSecret, decryptSecret } from '../security/crypto.js';
+import { validateSmtpConfig, validateRecipients } from './emailSecurityService.js';
 async function loadSettings() {
     // Fetch from generic IntegrationSetting (kind=email, provider=smtp)
     const integ = await prisma.integrationSetting.findFirst({ where: { kind: 'email', provider: 'smtp', active: true } });
@@ -11,17 +12,12 @@ async function loadSettings() {
         const secretStr = decryptSecret({ iv: integ.secretsIv, tag: integ.secretsTag, cipherText: integ.secretsCipher });
         let secrets = {};
         try {
-            // Try to parse as JSON (for encrypted passwords)
+            // Parse decrypted JSON payload
             secrets = JSON.parse(secretStr || '{}');
         }
-        catch {
-            // If parsing fails, treat as base64 encoded (for dev setup)
-            try {
-                secrets = JSON.parse(Buffer.from(integ.secretsCipher, 'base64').toString('utf8') || '{}');
-            }
-            catch {
-                secrets = { password: '' }; // Fallback to empty password
-            }
+        catch (parseError) {
+            console.error('[email] Failed to parse decrypted SMTP secrets', parseError);
+            return null;
         }
         const password = secrets.password || '';
         return {
@@ -99,12 +95,25 @@ function createTransport(config, opts) {
         },
     });
 }
-export async function sendMail(to, subject, text, html) {
+export async function sendMail(to, subject, text, html, options) {
     try {
         const cfg = await loadSettings();
         if (!cfg) {
             console.log('[email] ERROR: SMTP not configured');
             return { sent: false, error: 'SMTP not configured' };
+        }
+        // SECURITY VALIDATION (always enforced)
+        if (options?.skipSecurityValidation) {
+            console.warn('[email] skipSecurityValidation flag ignored; security validation is always enforced');
+        }
+        try {
+            validateSmtpConfig({ host: cfg.host });
+            const recipients = Array.isArray(to) ? to : [to];
+            validateRecipients(recipients);
+        }
+        catch (securityError) {
+            console.error('[email] SECURITY VIOLATION:', securityError.message);
+            return { sent: false, error: `Security validation failed: ${securityError.message}` };
         }
         const usePort587 = cfg.port === 587;
         const effectiveSecure = usePort587 ? false : cfg.secure; // STARTTLS path on 587
@@ -115,7 +124,27 @@ export async function sendMail(to, subject, text, html) {
         console.log('[email] Attempting to send email', { to, subject, from: cfg.fromAddress });
         console.log('[email] SMTP config loaded', { host: cfg.host, port: cfg.port, secure: effectiveSecure, requireTLS: !!requireTLS, heloHostname: cfg.host, username: cfg.username, fromAddress: cfg.fromAddress });
         const transporter = createTransport(cfg, { secureOverride: effectiveSecure, requireTLS });
-        const info = await transporter.sendMail({ from: cfg.fromAddress, to, subject, text, html });
+        // Build email with enhanced headers for better deliverability
+        const mailOptions = {
+            from: `"PestControl CRM" <${cfg.fromAddress}>`, // Add display name
+            to,
+            subject,
+            text,
+            html,
+            attachments: options?.attachments || [],
+            headers: {
+                'X-Mailer': 'PestControl-CRM-v1',
+                'X-Priority': '3',
+                'Importance': 'Normal'
+            },
+            list: {
+                unsubscribe: {
+                    url: 'mailto:unsubscribe@familyfriendlytechnologies.com',
+                    comment: 'Unsubscribe from scheduled reports'
+                }
+            }
+        };
+        const info = await transporter.sendMail(mailOptions);
         const normalize = (entries) => (entries || []).map((entry) => typeof entry === 'string' ? entry : entry?.address || '');
         const accepted = normalize(info.accepted);
         const rejected = normalize(info.rejected);

@@ -17,14 +17,10 @@ export const authMiddleware = (req, res, next) => {
                 return payload.roles.includes(role);
             }
         };
-        // Allow tenant override for elevated roles via header `x-tenant-id`
-        const overrideTenant = req.headers['x-tenant-id']?.trim();
-        if (overrideTenant && (payload.roles.includes('platform_admin') || payload.roles.includes('manager'))) {
-            req.tenantId = overrideTenant;
-        }
-        else {
-            req.tenantId = payload.tenantId;
-        }
+        // SECURITY FIX: Only set tenantId from JWT token
+        // Platform admins and managers will have access validated by tenantMiddleware
+        // NEVER trust x-tenant-id header at this stage
+        req.tenantId = payload.tenantId;
         next();
     }
     catch (e) {

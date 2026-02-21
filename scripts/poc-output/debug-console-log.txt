@@ -1,0 +1,28 @@
+[debug] [vite] connecting...
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[log] [auth] requesting dev token...
+[warn] ⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+[warn] ⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.
+[error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[log] [auth] stored new dev token
+[verbose] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o
+[debug] [vite] connected.
+[log] ✅ Auth injected
+[debug] [vite] connecting...
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[error] Warning: Received `%s` for a non-boolean attribute `%s`.
+
+If you want to write it to the DOM, pass a string instead: %s="%s" or %s={value.toString()}.%s true jsx jsx true jsx 
+    at style
+    at Sidebar (http://localhost:3000/src/components/Sidebar.jsx:4:35)
+    at div
+    at MainLayout (http://localhost:3000/src/components/MainLayout.jsx:3:38)
+    at App (http://localhost:3000/src/App.jsx:20:33)
+    at RenderedRoute (http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=412a6ff4:4106:5)
+    at Routes (http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=412a6ff4:4576:5)
+    at Router (http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=412a6ff4:4519:15)
+    at BrowserRouter (http://localhost:3000/node_modules/.vite/deps/react-router-dom.js?v=412a6ff4:5265:5)
+[warn] ⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+[warn] ⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.
+[error] Failed to load resource: the server responded with a status of 500 (Internal Server Error)
+[debug] [vite] connected.
