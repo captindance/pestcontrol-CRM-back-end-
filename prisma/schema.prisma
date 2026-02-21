@@ -13,23 +13,32 @@ model Client {
   id        Int      @id @default(autoincrement()) @map("id")
   name      String   @map("name")
   createdAt DateTime @default(now()) @map("created_at")
-  userRoles UserRole[]
-  reports   Report[]
+
+  // Email security fields
+  allowedEmailDomains  String? @map("allowed_email_domains") @db.Text // JSON array of allowed domains
+  requireEmailApproval Boolean @default(true) @map("require_email_approval") // External emails need approval
+
+  userRoles           UserRole[]
+  reports             Report[]
   databaseConnections DatabaseConnection[]
-  invitations Invitation[]
+  invitations         Invitation[]
+  reportSchedules     ReportSchedule[]
 
   @@map("clients")
 }
 
 model User {
-  id        Int      @id @default(autoincrement()) @map("id")
-  email     String   @unique @map("email")
-  firstName String?  @map("first_name")
-  lastName  String?  @map("last_name")
-  passwordHash String? @map("password_hash")
-  emailVerified Boolean @default(false) @map("email_verified")
-  createdAt DateTime @default(now()) @map("created_at")
-  userRoles UserRole[]
+  id                Int              @id @default(autoincrement()) @map("id")
+  email             String           @unique @map("email")
+  firstName         String?          @map("first_name")
+  lastName          String?          @map("last_name")
+  passwordHash      String?          @map("password_hash")
+  emailVerified     Boolean          @default(false) @map("email_verified")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  userRoles         UserRole[]
+  reportSchedules   ReportSchedule[]
+  createdSchedules  ReportSchedule[] @relation("ScheduleCreatedBy")
+  modifiedSchedules ReportSchedule[] @relation("ScheduleModifiedBy")
 
   @@map("users")
 }
@@ -52,101 +61,106 @@ enum Role {
 // This design allows users to have multiple roles (one per client + platform roles)
 // Permissions provide granular control - role sets defaults, permissions can override
 model UserRole {
-  id        Int                 @id @default(autoincrement()) @map("id")
-  userId    Int                 @map("user_id")
-  clientId  Int?                @map("client_id")  // null for platform-level roles, populated for client-scoped roles
-  role      Role                @map("role")
-  
+  id       Int  @id @default(autoincrement()) @map("id")
+  userId   Int  @map("user_id")
+  clientId Int? @map("client_id") // null for platform-level roles, populated for client-scoped roles
+  role     Role @map("role")
+
   // Granular permissions - null means use role defaults, true/false explicitly grants/denies
-  canViewReports      Boolean?  @map("can_view_reports")
-  canCreateReports    Boolean?  @map("can_create_reports")
-  canEditReports      Boolean?  @map("can_edit_reports")
-  canDeleteReports    Boolean?  @map("can_delete_reports")
+  canViewReports       Boolean? @map("can_view_reports")
+  canCreateReports     Boolean? @map("can_create_reports")
+  canEditReports       Boolean? @map("can_edit_reports")
+  canDeleteReports     Boolean? @map("can_delete_reports")
   canManageConnections Boolean? @map("can_manage_connections")
-  canInviteUsers      Boolean?  @map("can_invite_users")
-  canManageUsers      Boolean?  @map("can_manage_users")
-  
-  managerActive Boolean          @default(true) @map("manager_active")  // For manager role only: whether assignment is active
-  createdAt DateTime            @default(now()) @map("created_at")
-  updatedAt DateTime            @updatedAt @map("updated_at")
-  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  client    Client?             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  canInviteUsers       Boolean? @map("can_invite_users")
+  canManageUsers       Boolean? @map("can_manage_users")
+  canScheduleReports   Boolean? @map("can_schedule_reports")
+
+  managerActive         Boolean                @default(true) @map("manager_active") // For manager role only: whether assignment is active
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client                Client?                @relation(fields: [clientId], references: [id], onDelete: Cascade)
   connectionPermissions ConnectionPermission[]
 
   auditLogs UserRoleAuditLog[]
 
-  @@map("user_roles")
   @@unique([userId, clientId, role])
   @@index([clientId])
   @@index([userId])
   @@index([userId, clientId, managerActive])
-  @@index([userId, role])  // For efficient platform role lookups
+  @@index([userId, role]) // For efficient platform role lookups
+  @@map("user_roles")
 }
 
 model UserRoleAuditLog {
-  id         Int       @id @default(autoincrement()) @map("id")
-  userRoleId Int?      @map("user_role_id")
-  clientId   Int?      @map("client_id")
-  userId     Int?      @map("user_id")
-  changedBy  Int?      @map("changed_by")
-  action     String    @map("action")
-  field      String?   @map("field")
-  oldValue   String?   @map("old_value")
-  newValue   String?   @map("new_value")
-  reason     String?   @map("reason")
-  requestId  String?   @map("request_id")
-  createdAt  DateTime  @default(now()) @map("created_at")
+  id         Int      @id @default(autoincrement()) @map("id")
+  userRoleId Int?     @map("user_role_id")
+  clientId   Int?     @map("client_id")
+  userId     Int?     @map("user_id")
+  changedBy  Int?     @map("changed_by")
+  action     String   @map("action")
+  field      String?  @map("field")
+  oldValue   String?  @map("old_value")
+  newValue   String?  @map("new_value")
+  reason     String?  @map("reason")
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  userRole   UserRole? @relation(fields: [userRoleId], references: [id], onDelete: SetNull)
+  userRole UserRole? @relation(fields: [userRoleId], references: [id], onDelete: SetNull)
 
-  @@map("user_role_audit_log")
   @@index([clientId, createdAt])
   @@index([userId, createdAt])
   @@index([changedBy, createdAt])
-  @@index([userRoleId])  // For efficient audit queries by role
+  @@index([userRoleId]) // For efficient audit queries by role
+  @@map("user_role_audit_log")
 }
 
 // Granular per-connection access control
 model ConnectionPermission {
-  id           Int      @id @default(autoincrement()) @map("id")
-  userRoleId   Int      @map("user_role_id")
-  connectionId Int      @map("connection_id")
-  canView      Boolean  @default(true) @map("can_view")
-  canEdit      Boolean  @default(false) @map("can_edit")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  userRole     UserRole @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  id           Int                @id @default(autoincrement()) @map("id")
+  userRoleId   Int                @map("user_role_id")
+  connectionId Int                @map("connection_id")
+  canView      Boolean            @default(true) @map("can_view")
+  canEdit      Boolean            @default(false) @map("can_edit")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  userRole     UserRole           @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
   connection   DatabaseConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
-  @@map("connection_permissions")
   @@unique([userRoleId, connectionId])
   @@index([connectionId])
   @@index([userRoleId])
+  @@map("connection_permissions")
 }
 
 model Report {
-  id        Int          @id @default(autoincrement()) @map("id")
-  clientId  Int          @map("client_id")
-  name      String       @map("name")
-  queryKey  String?      @map("query_key")
-  sqlQuery  String?      @db.LongText @map("sql_query")  // SQL query for database connections - use LongText for large queries
-  status    ReportStatus @default(idle) @map("status")
-  connectionId Int?      @map("connection_id")
-  chartConfig Json?      @map("chart_config")  // Chart configuration: selected fields, chart type, etc.
-  createdAt DateTime     @default(now()) @map("created_at")
-  deletedAt DateTime?    @map("deleted_at")  // Soft delete timestamp
-  startedAt DateTime?    @map("started_at")  // Execution timestamp
-  finishedAt DateTime?   @map("finished_at")  // Completion timestamp
-  dataJson   Json?       @map("data_json")  // Execution result data
-  error      String?     @map("error")  // Execution error message
-  client    Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  connection DatabaseConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  id                    Int                 @id @default(autoincrement()) @map("id")
+  clientId              Int                 @map("client_id")
+  name                  String              @map("name")
+  queryKey              String?             @map("query_key")
+  sqlQuery              String?             @map("sql_query") @db.LongText // SQL query for database connections - use LongText for large queries
+  status                ReportStatus        @default(idle) @map("status")
+  connectionId          Int?                @map("connection_id")
+  chartConfig           Json?               @map("chart_config") // Chart configuration: selected fields, chart type, etc.
+  createdAt             DateTime            @default(now()) @map("created_at")
+  deletedAt             DateTime?           @map("deleted_at") // Soft delete timestamp
+  startedAt             DateTime?           @map("started_at") // Execution timestamp
+  finishedAt            DateTime?           @map("finished_at") // Completion timestamp
+  dataJson              Json?               @map("data_json") // Execution result data
+  error                 String?             @map("error") // Execution error message
+  chartImageData        Bytes?              @map("chart_image_data") // PNG image bytes generated from dataJson
+  chartImageGeneratedAt DateTime?           @map("chart_image_generated_at") // Timestamp of last image generation
+  chartImageError       String?             @map("chart_image_error") // Error message if chart generation failed
+  client                Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connection            DatabaseConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  reportSchedules       ReportSchedule[]
 
-  @@map("reports")
   @@index([clientId])
   @@index([connectionId])
-  @@index([clientId, deletedAt])  // For filtering active reports
-  @@index([clientId, status, deletedAt])  // For filtering by status
+  @@index([clientId, deletedAt]) // For filtering active reports
+  @@index([clientId, status, deletedAt]) // For filtering by status
+  @@map("reports")
 }
 
 enum ReportStatus {
@@ -155,25 +169,25 @@ enum ReportStatus {
 }
 
 model DatabaseConnection {
-  id        Int      @id @default(autoincrement()) @map("id")
-  clientId  Int      @map("client_id")
-  name      String   @map("name")  // Only field left unencrypted for display purposes
+  id                    Int                    @id @default(autoincrement()) @map("id")
+  clientId              Int                    @map("client_id")
+  name                  String                 @map("name") // Only field left unencrypted for display purposes
   // All connection details encrypted for security
-  dataIv        String @map("data_enc_iv")
-  dataTag       String @map("data_enc_tag")
-  dataCipher    String @db.Text @map("data_enc_cipher")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")  // Soft delete timestamp
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  reports   Report[]
+  dataIv                String                 @map("data_enc_iv")
+  dataTag               String                 @map("data_enc_tag")
+  dataCipher            String                 @map("data_enc_cipher") @db.Text
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  deletedAt             DateTime?              @map("deleted_at") // Soft delete timestamp
+  client                Client                 @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  reports               Report[]
   connectionPermissions ConnectionPermission[]
 
-  @@map("database_connections")
+  @@unique([id, clientId]) // Support for tenant-scoped compound foreign key validation
   @@index([clientId])
   @@index([clientId, name])
-  @@index([clientId, deletedAt])  // For filtering active connections
-  @@unique([id, clientId])  // Support for tenant-scoped compound foreign key validation
+  @@index([clientId, deletedAt]) // For filtering active connections
+  @@map("database_connections")
 }
 
 // Generic, future-proof integration settings table for communication/integration providers
@@ -185,43 +199,44 @@ enum IntegrationKind {
   push
   calendar
   contacts
+  queue // Redis/Bull queue for scheduled reports
   other
 }
 
 model IntegrationSetting {
-  id        Int             @id @default(autoincrement()) @map("id")
-  kind      IntegrationKind @map("kind")
-  provider  String          @map("provider") // e.g., smtp, twilio, sendgrid, webhook, mysql
-  clientId  Int?            @map("client_id") // null for platform-wide (email), populated for per-client (database creds)
-  configJson Json           @map("config_json") // non-sensitive config (host, port, username, from, etc.)
-  secretsIv     String      @map("secrets_enc_iv")
-  secretsTag    String      @map("secrets_enc_tag")
-  secretsCipher String      @map("secrets_enc_cipher") // encrypted JSON string of secrets
-  active    Boolean         @default(true) @map("active")
-  createdAt DateTime        @default(now()) @map("created_at")
-  updatedAt DateTime        @updatedAt @map("updated_at")
+  id            Int             @id @default(autoincrement()) @map("id")
+  kind          IntegrationKind @map("kind")
+  provider      String          @map("provider") // e.g., smtp, twilio, sendgrid, webhook, mysql, redis
+  clientId      Int?            @map("client_id") // null for platform-wide (email, queue), populated for per-client (database creds)
+  configJson    Json            @map("config_json") // non-sensitive config (host, port, username, from, etc.)
+  secretsIv     String          @map("secrets_enc_iv")
+  secretsTag    String          @map("secrets_enc_tag")
+  secretsCipher String          @map("secrets_enc_cipher") // encrypted JSON string of secrets
+  active        Boolean         @default(true) @map("active")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
 
-  @@map("integration_settings")
+  @@unique([kind, provider, clientId], name: "unique_integration_config")
   @@index([kind, provider])
   @@index([clientId])
+  @@map("integration_settings")
 }
 
 // Invitations table for tracking account creation, password resets, and email verification
 model Invitation {
-  id                Int       @id @default(autoincrement()) @map("id")
-  email             String    @map("email")
-  clientId          Int?      @map("client_id")  // Nullable for platform-wide actions (account_creation, password_reset)
-  invitationType    String    @default("account_creation") @map("invitation_type")  // 'account_creation', 'password_reset', 'email_verification'
-  status            String    @default("pending") @map("status")  // 'pending', 'accepted', 'expired'
-  token             String    @unique @map("token")  // Secure unique token
-  sentAt            DateTime  @default(now()) @map("sent_at")
-  acceptedAt        DateTime? @map("accepted_at")
-  expiresAt         DateTime  @map("expires_at")  // Calculated when creating invitation (now + 30 days)
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
-  client            Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  id             Int       @id @default(autoincrement()) @map("id")
+  email          String    @map("email")
+  clientId       Int?      @map("client_id") // Nullable for platform-wide actions (account_creation, password_reset)
+  invitationType String    @default("account_creation") @map("invitation_type") // 'account_creation', 'password_reset', 'email_verification'
+  status         String    @default("pending") @map("status") // 'pending', 'accepted', 'expired'
+  token          String    @unique @map("token") // Secure unique token
+  sentAt         DateTime  @default(now()) @map("sent_at")
+  acceptedAt     DateTime? @map("accepted_at")
+  expiresAt      DateTime  @map("expires_at") // Calculated when creating invitation (now + 30 days)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  client         Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
-  @@map("invitations")
   // account_creation invites are global (clientId=null), so unique by email+type
   // password_reset invites are global (clientId=null), so unique by email+type
   // email_verification invites are client-scoped (clientId provided)
@@ -229,5 +244,136 @@ model Invitation {
   @@index([email, status])
   @@index([token])
   @@index([clientId, status])
-  @@index([status, expiresAt])  // For efficient cleanup of expired invitations
+  @@index([status, expiresAt]) // For efficient cleanup of expired invitations
+  @@map("invitations")
+}
+
+// ===== SCHEDULED REPORTS MODELS =====
+
+enum ScheduleFrequency {
+  daily
+  weekly
+  monthly
+  quarterly
+  semi_annually
+  annually
+}
+
+enum ExecutionStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+// Main schedule configuration
+model ReportSchedule {
+  id       String @id @default(uuid()) @map("id") // UUID for security (no enumeration)
+  clientId Int    @map("client_id")
+  userId   Int    @map("user_id")
+  reportId Int    @map("report_id")
+  name     String @map("name") // User-friendly name for schedule
+
+  // Schedule configuration
+  frequency  ScheduleFrequency @map("frequency")
+  timeOfDay  String            @map("time_of_day") // Format: "HH:MM" (e.g., "09:00")
+  timezone   String            @default("America/New_York") @map("timezone")
+  dayOfWeek  Int?              @map("day_of_week") // 0-6 (Sunday=0) for weekly schedules
+  dayOfMonth Int?              @map("day_of_month") // 1-31 for monthly schedules
+  nextRunAt  DateTime?         @map("next_run_at") // Calculated next execution time
+
+  // Security
+  emailSecurityLevel String @default("internal") @map("email_security_level") // internal, pii, confidential
+
+  // Audit tracking
+  createdBy      Int       @map("created_by")
+  lastModifiedBy Int?      @map("last_modified_by")
+  lastModifiedAt DateTime? @map("last_modified_at")
+
+  // Status
+  isEnabled Boolean   @default(true) @map("is_enabled")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at") // Soft delete
+
+  // Relationships with CASCADE delete
+  client     Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user       User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  report     Report                    @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  recipients ReportScheduleRecipient[]
+  executions ReportScheduleExecution[]
+  creator    User                      @relation("ScheduleCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  modifier   User?                     @relation("ScheduleModifiedBy", fields: [lastModifiedBy], references: [id], onDelete: SetNull)
+
+  @@index([clientId, deletedAt, isEnabled])
+  @@index([nextRunAt, isEnabled, deletedAt])
+  @@index([reportId])
+  @@index([userId])
+  @@index([createdBy])
+  @@index([lastModifiedBy])
+  @@map("report_schedules")
+}
+
+// Recipients for each schedule
+model ReportScheduleRecipient {
+  id         String   @id @default(uuid()) @map("id")
+  scheduleId String   @map("schedule_id")
+  email      String   @map("email")
+  domain     String?  @map("domain")
+  isExternal Boolean  @default(false) @map("is_external")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  schedule ReportSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, email])
+  @@index([scheduleId])
+  @@index([scheduleId, isExternal])
+  @@map("report_schedule_recipients")
+}
+
+// Execution history for audit and monitoring
+model ReportScheduleExecution {
+  id         String @id @default(uuid()) @map("id")
+  scheduleId String @map("schedule_id")
+  clientId   Int    @map("client_id")
+  reportId   Int    @map("report_id")
+
+  startedAt   DateTime        @map("started_at")
+  completedAt DateTime?       @map("completed_at")
+  status      ExecutionStatus @map("status")
+
+  emailsSent   Int     @default(0) @map("emails_sent")
+  emailsFailed Int     @default(0) @map("emails_failed")
+  errorMessage String? @map("error_message") @db.Text
+
+  schedule ReportSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([scheduleId])
+  @@index([clientId, startedAt])
+  @@index([status, startedAt])
+  @@map("report_schedule_executions")
+}
+
+// Audit logs table for security and compliance
+model AuditLog {
+  id           String   @id @default(uuid()) @map("id")
+  action       String   @map("action") @db.VarChar(50)
+  severity     String   @map("severity") @db.VarChar(20)
+  userId       Int?     @map("user_id")
+  tenantId     Int?     @map("tenant_id")
+  ipAddress    String?  @map("ip_address") @db.VarChar(45)
+  userAgent    String?  @map("user_agent") @db.VarChar(500)
+  resourceType String?  @map("resource_type") @db.VarChar(50)
+  resourceId   String?  @map("resource_id") @db.VarChar(50)
+  details      Json?    @map("details")
+  errorMessage String?  @map("error_message") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([tenantId])
+  @@index([action, severity])
+  @@index([createdAt])
+  @@index([userId, tenantId, createdAt])
+  @@map("audit_logs")
 }

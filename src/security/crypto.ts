@@ -9,6 +9,20 @@ function getKey(): Buffer {
   return Buffer.from(KEY_HEX, 'hex');
 }
 
+/**
+ * Validate that encryption key is properly configured
+ * Should be called at startup before any encryption operations
+ */
+export function validateEncryptionKey(): void {
+  try {
+    getKey(); // Will throw if key is invalid
+    console.log('[crypto] ✓ Encryption key validated');
+  } catch (error: any) {
+    console.error('[crypto] ✗ Encryption key validation failed:', error.message);
+    throw new Error('DB_ENCRYPTION_KEY is not properly configured. Server cannot start.');
+  }
+}
+
 export interface EncryptedPayload {
   iv: string; // hex
   tag: string; // hex

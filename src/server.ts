@@ -12,10 +12,20 @@ import authRoutes from './routes/authRoutes.js';
 import managerRoutes from './routes/managerRoutes.js';
 import connectionRoutes from './routes/connectionRoutes.js';
 import connectionPermissionRoutes from './routes/connectionPermissionRoutes.js';
+import chartRoutes from './routes/chartRoutes.js';
+import scheduleRoutes from './routes/scheduleRoutes.js';
+import auditRoutes from './routes/auditRoutes.js';
+import dashboardRoutes from './routes/dashboardRoutes.js';
 import { prisma } from './db/prisma.js';
 import jwt from 'jsonwebtoken';
 import { initializeJWTConfig, getJWTConfig } from './config/jwt.config.js';
 import { logger } from './utils/logger.js';
+import { initializeQueue, startScheduleChecker, closeQueue } from './services/queueService.js';
+import { initializeRedisConfig } from './services/redisConfigService.js';
+import { validateEncryptionKey } from './security/crypto.js';
+
+// Validate encryption key at startup (CRITICAL - must be first)
+validateEncryptionKey();
 
 // Initialize and validate JWT configuration at startup
 initializeJWTConfig();
@@ -233,6 +243,9 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
 app.use('/api/auth', authRoutes);
 
+// Chart rendering route (no auth, uses secret token) - MUST be before auth middleware
+app.use('/api', chartRoutes);
+
 // General API rate limiting
 app.use('/api', apiLimiter);
 
@@ -246,6 +259,35 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/connections', connectionRoutes);
 app.use('/api/connection-permissions', connectionPermissionRoutes);
+app.use('/api/schedules', scheduleRoutes);
+app.use('/api/audit', auditRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+
+// Initialize infrastructure asynchronously after routes are registered
+// CRITICAL: Must be done in sequence to avoid race conditions
+async function initializeInfrastructure() {
+  try {
+    // Step 1: Initialize Redis configuration in database (from env on first run)
+    console.log('[startup] Initializing Redis configuration...');
+    await initializeRedisConfig();
+    
+    // Step 2: Initialize Bull queue (now that Redis config is in DB)
+    console.log('[startup] Initializing Bull queue...');
+    await initializeQueue();
+    
+    // Step 3: Start schedule checker (runs every minute)
+    console.log('[startup] Starting schedule checker...');
+    startScheduleChecker();
+    
+    console.log('[startup] ✓ Scheduled reports system initialized');
+  } catch (error) {
+    console.error('[startup] ✗ Failed to initialize infrastructure:', error);
+    console.error('[startup] Scheduled reports will not work. Check Redis and database configuration.');
+  }
+}
+
+// Start infrastructure initialization (non-blocking)
+initializeInfrastructure();
 
 const server = app.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
@@ -266,4 +308,23 @@ process.on('uncaughtException', (err) => {
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[fatal] Unhandled promise rejection:', reason);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('[shutdown] SIGTERM received, closing gracefully...');
+  await closeQueue();
+  server.close(() => {
+    console.log('[shutdown] Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('[shutdown] SIGINT received, closing gracefully...');
+  await closeQueue();
+  server.close(() => {
+    console.log('[shutdown] Server closed');
+    process.exit(0);
+  });
 });

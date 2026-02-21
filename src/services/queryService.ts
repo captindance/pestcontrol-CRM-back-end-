@@ -365,20 +365,41 @@ export async function executeAndCacheQuery(
 }
 
 /**
- * Get cached query results for a report
+ * Get cached query results for a report.
+ * Returns executedAt as the most recent of: manual query run (report.startedAt)
+ * OR last successful scheduled delivery (ReportScheduleExecution.completedAt).
  */
 export async function getCachedResults(reportId: number) {
-  const report = await prisma.report.findUnique({
-    where: { id: reportId },
-  });
+  const [report, lastExecution] = await Promise.all([
+    prisma.report.findUnique({ where: { id: reportId } }),
+    prisma.reportScheduleExecution.findFirst({
+      where: { reportId, status: 'completed' },
+      orderBy: { completedAt: 'desc' },
+      select: { completedAt: true },
+    }),
+  ]);
 
-  if (!report || !report.startedAt) {
+  if (!report || !report.dataJson) {
+    return null;
+  }
+
+  // Pick the most recent timestamp so "Last run" always reflects the latest activity
+  const manualRunAt = report.startedAt;
+  const scheduledAt = lastExecution?.completedAt ?? null;
+  let executedAt: Date | null = null;
+  if (manualRunAt && scheduledAt) {
+    executedAt = manualRunAt > scheduledAt ? manualRunAt : scheduledAt;
+  } else {
+    executedAt = manualRunAt ?? scheduledAt;
+  }
+
+  if (!executedAt) {
     return null;
   }
 
   return {
     id: report.id,
-    executedAt: report.startedAt,
+    executedAt,
     data: report.dataJson,
     error: report.error,
   };

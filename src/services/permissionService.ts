@@ -11,6 +11,7 @@ const roleDefaults = {
     canManageConnections: true,
     canInviteUsers: true,
     canManageUsers: true,
+    canScheduleReports: true,
   },
   business_owner: {
     canViewReports: true,
@@ -20,6 +21,7 @@ const roleDefaults = {
     canManageConnections: true,
     canInviteUsers: true,
     canManageUsers: true,
+    canScheduleReports: true,
   },
   delegate: {
     canViewReports: true,
@@ -29,6 +31,7 @@ const roleDefaults = {
     canManageConnections: true,
     canInviteUsers: false,  // Delegates cannot invite by default
     canManageUsers: false,
+    canScheduleReports: true,
   },
   viewer: {
     canViewReports: true,
@@ -38,6 +41,7 @@ const roleDefaults = {
     canManageConnections: false,
     canInviteUsers: false,
     canManageUsers: false,
+    canScheduleReports: false,
   },
   manager: {
     canViewReports: true,
@@ -47,6 +51,7 @@ const roleDefaults = {
     canManageConnections: true,
     canInviteUsers: false,
     canManageUsers: false,
+    canScheduleReports: true,
   },
 };
 
@@ -57,7 +62,8 @@ export type Permission =
   | 'canDeleteReports'
   | 'canManageConnections'
   | 'canInviteUsers'
-  | 'canManageUsers';
+  | 'canManageUsers'
+  | 'canScheduleReports';
 
 /**
  * Check if user has a specific permission for a client
@@ -105,6 +111,7 @@ export async function getUserPermissions(userId: number, clientId: number) {
     canManageConnections: userRole.canManageConnections ?? defaults.canManageConnections ?? false,
     canInviteUsers: userRole.canInviteUsers ?? defaults.canInviteUsers ?? false,
     canManageUsers: userRole.canManageUsers ?? defaults.canManageUsers ?? false,
+    canScheduleReports: userRole.canScheduleReports ?? defaults.canScheduleReports ?? false,
   };
 }
 
