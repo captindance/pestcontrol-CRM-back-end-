@@ -218,7 +218,7 @@ async function processScheduledReport(job: Job<ScheduleJobData>): Promise<void> 
                 </div>
 
                 <div style="text-align: center; margin: 30px 0;">
-                  <img src="cid:report-chart" alt="${report.name}" style="max-width: 100%; height: auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />
+                  <img src="cid:report-chart" alt="${report.name}" style="display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />
                 </div>
 
                 <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
@@ -241,9 +241,10 @@ async function processScheduledReport(job: Job<ScheduleJobData>): Promise<void> 
           {
             attachments: [
               {
-                filename: 'report-chart.png',
                 content: reportWithImage.chartImageData,
-                cid: 'report-chart'
+                cid: 'report-chart',
+                contentType: 'image/png',
+                contentDisposition: 'inline'
               }
             ],
             skipSecurityValidation: false

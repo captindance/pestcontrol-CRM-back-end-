@@ -27,6 +27,8 @@ Database_Backups/
 logs/
 *.log
 redis/dump.rdb
+redis/
+scripts/poc-output/
 
 # IDE
 .vscode/
